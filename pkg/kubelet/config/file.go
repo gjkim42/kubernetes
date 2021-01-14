@@ -77,7 +77,7 @@ func newSourceFile(path string, nodeName types.NodeName, period time.Duration, u
 		}
 		updates <- kubetypes.PodUpdate{Pods: pods, Op: kubetypes.SET, Source: kubetypes.FileSource}
 	}
-	store := cache.NewUndeltaStore(send, cache.MetaNamespaceKeyFunc)
+	store := cache.NewUndeltaStore(send, podHashKeyFunc)
 	return &sourceFile{
 		path:           path,
 		nodeName:       nodeName,
@@ -87,6 +87,10 @@ func newSourceFile(path string, nodeName types.NodeName, period time.Duration, u
 		updates:        updates,
 		watchEvents:    make(chan *watchEvent, eventBufferLen),
 	}
+}
+
+func podHashKeyFunc(obj interface{}) (string, error) {
+	return string(obj.(*v1.Pod).UID), nil
 }
 
 func (s *sourceFile) run() {

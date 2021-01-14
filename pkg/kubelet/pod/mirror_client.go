@@ -19,15 +19,18 @@ package pod
 import (
 	"context"
 	"fmt"
+	"sync"
 
 	v1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/runtime"
 	clientset "k8s.io/client-go/kubernetes"
 	"k8s.io/klog/v2"
 	kubecontainer "k8s.io/kubernetes/pkg/kubelet/container"
 	kubetypes "k8s.io/kubernetes/pkg/kubelet/types"
+	"k8s.io/kubernetes/pkg/kubelet/util/format"
 )
 
 // MirrorClient knows how to create/delete a mirror pod in the API server.
@@ -37,9 +40,12 @@ type MirrorClient interface {
 	// as the given pod as well as an extra annotation containing the hash of
 	// the static pod.
 	CreateMirrorPod(pod *v1.Pod) error
+	UpdateMirrorPod(pod *v1.Pod) error
 	// DeleteMirrorPod deletes the mirror pod with the given full name from
 	// the API server or returns an error.
 	DeleteMirrorPod(podFullName string, uid *types.UID) (bool, error)
+	RedirectPod(options *RedirectPodOptions)
+	ForgetWorker(uid types.UID)
 }
 
 // nodeGetter is a subset a NodeLister, simplified for testing.
@@ -55,6 +61,8 @@ type basicMirrorClient struct {
 	apiserverClient clientset.Interface
 	nodeGetter      nodeGetter
 	nodeName        string
+	podRedirects    map[types.UID]chan RedirectPodOptions
+	lock            sync.Mutex
 }
 
 // NewBasicMirrorClient returns a new MirrorClient.
@@ -63,7 +71,60 @@ func NewBasicMirrorClient(apiserverClient clientset.Interface, nodeName string, 
 		apiserverClient: apiserverClient,
 		nodeName:        nodeName,
 		nodeGetter:      nodeGetter,
+		podRedirects:    make(map[types.UID]chan RedirectPodOptions),
 	}
+}
+
+type RedirectPodOptions struct {
+	Pod *v1.Pod
+	Op  kubetypes.PodOperation
+}
+
+func (mc *basicMirrorClient) managePodLoop(podRedirects <-chan RedirectPodOptions) {
+	for redirect := range podRedirects {
+		var err error
+		switch redirect.Op {
+		case kubetypes.ADD:
+			err = mc.CreateMirrorPod(redirect.Pod)
+		case kubetypes.UPDATE, kubetypes.DELETE:
+			err = mc.UpdateMirrorPod(redirect.Pod)
+		case kubetypes.REMOVE:
+			podFullName := kubecontainer.GetPodFullName(redirect.Pod)
+			_, err = mc.DeleteMirrorPod(podFullName, &redirect.Pod.UID)
+		}
+		if err != nil {
+			klog.Errorf("Error redirecting pod %s (%q), skipping: %v", redirect.Pod.UID, format.Pod(redirect.Pod), err)
+		}
+	}
+}
+
+func (mc *basicMirrorClient) ForgetWorker(uid types.UID) {
+	mc.lock.Lock()
+	defer mc.lock.Unlock()
+	if ch, exists := mc.podRedirects[uid]; exists {
+		close(ch)
+		delete(mc.podRedirects, uid)
+	}
+}
+
+func (mc *basicMirrorClient) RedirectPod(options *RedirectPodOptions) {
+	pod := options.Pod
+	uid := pod.UID
+	var podRedirects chan RedirectPodOptions
+	var exists bool
+
+	mc.lock.Lock()
+	defer mc.lock.Unlock()
+	if podRedirects, exists = mc.podRedirects[uid]; !exists {
+		podRedirects = make(chan RedirectPodOptions, 1)
+		mc.podRedirects[uid] = podRedirects
+
+		go func() {
+			defer runtime.HandleCrash()
+			mc.managePodLoop(podRedirects)
+		}()
+	}
+	podRedirects <- *options
 }
 
 func (mc *basicMirrorClient) CreateMirrorPod(pod *v1.Pod) error {
@@ -77,8 +138,8 @@ func (mc *basicMirrorClient) CreateMirrorPod(pod *v1.Pod) error {
 	for k, v := range pod.Annotations {
 		copyPod.Annotations[k] = v
 	}
-	hash := getPodHash(pod)
-	copyPod.Annotations[kubetypes.ConfigMirrorAnnotationKey] = hash
+	//	hash := getPodHash(pod)
+	//	copyPod.Annotations[kubetypes.ConfigMirrorAnnotationKey] = hash
 
 	// With the MirrorPodNodeRestriction feature, mirror pods are required to have an owner reference
 	// to the owning node.
@@ -96,14 +157,27 @@ func (mc *basicMirrorClient) CreateMirrorPod(pod *v1.Pod) error {
 		Controller: &controller,
 	}}
 
-	apiPod, err := mc.apiserverClient.CoreV1().Pods(copyPod.Namespace).Create(context.TODO(), &copyPod, metav1.CreateOptions{})
-	if err != nil && apierrors.IsAlreadyExists(err) {
-		// Check if the existing pod is the same as the pod we want to create.
-		if h, ok := apiPod.Annotations[kubetypes.ConfigMirrorAnnotationKey]; ok && h == hash {
-			return nil
-		}
-	}
+	_, err = mc.apiserverClient.CoreV1().Pods(copyPod.Namespace).Create(context.TODO(), &copyPod, metav1.CreateOptions{})
+	//	if err != nil && apierrors.IsAlreadyExists(err) {
+	//		 Check if the existing pod is the same as the pod we want to create.
+	//				if h, ok := apiPod.Annotations[kubetypes.ConfigMirrorAnnotationKey]; ok && h == hash {
+	//					return nil
+	//				}
+	//	}
 	return err
+}
+
+func (mc *basicMirrorClient) UpdateMirrorPod(pod *v1.Pod) error {
+	apiPod, err := mc.apiserverClient.CoreV1().Pods(pod.Namespace).Get(context.TODO(), pod.Name, metav1.GetOptions{})
+	if err != nil {
+		return err
+	}
+	apiPod.Spec = pod.Spec
+	_, err = mc.apiserverClient.CoreV1().Pods(apiPod.Namespace).Update(context.TODO(), apiPod, metav1.UpdateOptions{})
+	if err != nil {
+		return err
+	}
+	return nil
 }
 
 // DeleteMirrorPod deletes a mirror pod.

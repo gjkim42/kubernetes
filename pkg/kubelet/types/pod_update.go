@@ -53,6 +53,25 @@ const (
 	RECONCILE
 )
 
+func (op PodOperation) String() string {
+	switch op {
+	case SET:
+		return "SET"
+	case ADD:
+		return "ADD"
+	case DELETE:
+		return "DELETE"
+	case REMOVE:
+		return "REMOVE"
+	case UPDATE:
+		return "UPDATE"
+	case RECONCILE:
+		return "RECONCILE"
+	default:
+		return "UNKNOWN"
+	}
+}
+
 // These constants identify the sources of pods.
 const (
 	// Filesource idenitified updates from a file.
@@ -143,12 +162,14 @@ func (sp SyncPodType) String() string {
 
 // IsMirrorPod returns true if the passed Pod is a Mirror Pod.
 func IsMirrorPod(pod *v1.Pod) bool {
+	return false
 	_, ok := pod.Annotations[ConfigMirrorAnnotationKey]
 	return ok
 }
 
 // IsStaticPod returns true if the pod is a static pod.
 func IsStaticPod(pod *v1.Pod) bool {
+	return false
 	source, err := GetPodSource(pod)
 	return err == nil && source != ApiserverSource
 }

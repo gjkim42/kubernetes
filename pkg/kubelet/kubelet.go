@@ -444,7 +444,7 @@ func NewMainKubelet(kubeCfg *kubeletconfiginternal.KubeletConfiguration,
 		nodeLister = kubeInformers.Core().V1().Nodes().Lister()
 		nodeHasSynced = func() bool {
 			if kubeInformers.Core().V1().Nodes().Informer().HasSynced() {
-				klog.Infof("kubelet nodes sync")
+				//				klog.Infof("kubelet nodes sync")
 				return true
 			}
 			klog.Infof("kubelet nodes not sync")
@@ -1745,6 +1745,9 @@ func (kl *Kubelet) deletePod(pod *v1.Pod) error {
 		return fmt.Errorf("skipping delete because sources aren't ready yet")
 	}
 	kl.podWorkers.ForgetWorker(pod.UID)
+	if hash, exists := pod.Annotations[kubetypes.ConfigHashAnnotationKey]; exists {
+		kl.podManager.ForgetWorker(types.UID(hash))
+	}
 
 	// make sure our runtimeCache is at least as fresh as the last container started event we observed.
 	// this ensures we correctly send graceful deletion signals to all containers we've reported started.
@@ -1905,32 +1908,46 @@ func (kl *Kubelet) syncLoopIteration(configCh <-chan kubetypes.PodUpdate, handle
 			return false
 		}
 
-		switch u.Op {
-		case kubetypes.ADD:
-			klog.V(2).Infof("SyncLoop (ADD, %q): %q", u.Source, format.Pods(u.Pods))
-			// After restarting, kubelet will get all existing pods through
-			// ADD as if they are new pods. These pods will then go through the
-			// admission process and *may* be rejected. This can be resolved
-			// once we have checkpointing.
-			handler.HandlePodAdditions(u.Pods)
-		case kubetypes.UPDATE:
-			klog.V(2).Infof("SyncLoop (UPDATE, %q): %q", u.Source, format.PodsWithDeletionTimestamps(u.Pods))
-			handler.HandlePodUpdates(u.Pods)
-		case kubetypes.REMOVE:
-			klog.V(2).Infof("SyncLoop (REMOVE, %q): %q", u.Source, format.Pods(u.Pods))
-			handler.HandlePodRemoves(u.Pods)
-		case kubetypes.RECONCILE:
-			klog.V(4).Infof("SyncLoop (RECONCILE, %q): %q", u.Source, format.Pods(u.Pods))
-			handler.HandlePodReconcile(u.Pods)
-		case kubetypes.DELETE:
-			klog.V(2).Infof("SyncLoop (DELETE, %q): %q", u.Source, format.Pods(u.Pods))
-			// DELETE is treated as a UPDATE because of graceful deletion.
-			handler.HandlePodUpdates(u.Pods)
-		case kubetypes.SET:
-			// TODO: Do we want to support this?
-			klog.Errorf("Kubelet does not support snapshot update")
-		default:
-			klog.Errorf("Invalid event type received: %d.", u.Op)
+		if u.Source == "file" || u.Source == "http" {
+			if u.Op == kubetypes.RECONCILE {
+				handler.HandlePodReconcile(u.Pods)
+			} else {
+				for _, pod := range u.Pods {
+					klog.V(2).Infof("Redirect (%s, %q): %q", u.Op, u.Source, format.Pods(u.Pods))
+					kl.podManager.RedirectPod(&kubepod.RedirectPodOptions{
+						Pod: pod,
+						Op:  u.Op,
+					})
+				}
+			}
+		} else {
+			switch u.Op {
+			case kubetypes.ADD:
+				klog.V(2).Infof("SyncLoop (ADD, %q): %q", u.Source, format.Pods(u.Pods))
+				// After restarting, kubelet will get all existing pods through
+				// ADD as if they are new pods. These pods will then go through the
+				// admission process and *may* be rejected. This can be resolved
+				// once we have checkpointing.
+				handler.HandlePodAdditions(u.Pods)
+			case kubetypes.UPDATE:
+				klog.V(2).Infof("SyncLoop (UPDATE, %q): %q", u.Source, format.PodsWithDeletionTimestamps(u.Pods))
+				handler.HandlePodUpdates(u.Pods)
+			case kubetypes.REMOVE:
+				klog.V(2).Infof("SyncLoop (REMOVE, %q): %q", u.Source, format.Pods(u.Pods))
+				handler.HandlePodRemoves(u.Pods)
+			case kubetypes.RECONCILE:
+				klog.V(4).Infof("SyncLoop (RECONCILE, %q): %q", u.Source, format.Pods(u.Pods))
+				handler.HandlePodReconcile(u.Pods)
+			case kubetypes.DELETE:
+				klog.V(2).Infof("SyncLoop (DELETE, %q): %q", u.Source, format.Pods(u.Pods))
+				// DELETE is treated as a UPDATE because of graceful deletion.
+				handler.HandlePodUpdates(u.Pods)
+			case kubetypes.SET:
+				// TODO: Do we want to support this?
+				klog.Errorf("Kubelet does not support snapshot update")
+			default:
+				klog.Errorf("Invalid event type received: %d.", u.Op)
+			}
 		}
 
 		kl.sourcesReady.AddSource(u.Source)
