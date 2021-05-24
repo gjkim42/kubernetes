@@ -24,9 +24,11 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	v1helper "k8s.io/kubernetes/pkg/apis/core/v1/helper"
+	"k8s.io/kubernetes/pkg/kubelet/types"
 	schedulerframework "k8s.io/kubernetes/pkg/scheduler/framework"
 	"k8s.io/kubernetes/pkg/scheduler/framework/plugins/nodename"
 	"k8s.io/kubernetes/pkg/scheduler/framework/plugins/nodeports"
+	"k8s.io/kubernetes/pkg/scheduler/framework/plugins/tainttoleration"
 )
 
 var (
@@ -248,6 +250,104 @@ func TestGeneralPredicates(t *testing.T) {
 			wErr:    nil,
 			reasons: []PredicateFailureReason{&PredicateFailureError{nodeports.Name, nodeports.ErrReason}},
 			name:    "hostport conflict",
+		},
+		{
+			pod: &v1.Pod{
+				Spec: v1.PodSpec{
+					Tolerations: []v1.Toleration{
+						{Key: "foo"},
+						{Key: "bar"},
+					},
+				},
+			},
+			nodeInfo: schedulerframework.NewNodeInfo(),
+			node: &v1.Node{
+				ObjectMeta: metav1.ObjectMeta{Name: "machine1"},
+				Spec: v1.NodeSpec{
+					Taints: []v1.Taint{
+						{Key: "foo", Effect: v1.TaintEffectNoSchedule},
+						{Key: "bar", Effect: v1.TaintEffectNoExecute},
+					},
+				},
+				Status: v1.NodeStatus{Capacity: makeResources(10, 20, 32, 0, 0, 0).Capacity, Allocatable: makeAllocatableResources(10, 20, 32, 0, 0, 0)},
+			},
+			fits: true,
+			wErr: nil,
+			name: "taint/toleration match",
+		},
+		{
+			pod:      &v1.Pod{},
+			nodeInfo: schedulerframework.NewNodeInfo(),
+			node: &v1.Node{
+				ObjectMeta: metav1.ObjectMeta{Name: "machine1"},
+				Spec: v1.NodeSpec{
+					Taints: []v1.Taint{
+						{Key: "foo", Effect: v1.TaintEffectNoSchedule},
+					},
+				},
+				Status: v1.NodeStatus{Capacity: makeResources(10, 20, 32, 0, 0, 0).Capacity, Allocatable: makeAllocatableResources(10, 20, 32, 0, 0, 0)},
+			},
+			fits:    true,
+			wErr:    nil,
+			reasons: []PredicateFailureReason{&PredicateFailureError{tainttoleration.Name, tainttoleration.ErrReasonNotMatch}},
+			name:    "NoSchedule taint/toleration not match",
+		},
+		{
+			pod:      &v1.Pod{},
+			nodeInfo: schedulerframework.NewNodeInfo(),
+			node: &v1.Node{
+				ObjectMeta: metav1.ObjectMeta{Name: "machine1"},
+				Spec: v1.NodeSpec{
+					Taints: []v1.Taint{
+						{Key: "bar", Effect: v1.TaintEffectNoExecute},
+					},
+				},
+				Status: v1.NodeStatus{Capacity: makeResources(10, 20, 32, 0, 0, 0).Capacity, Allocatable: makeAllocatableResources(10, 20, 32, 0, 0, 0)},
+			},
+			fits:    false,
+			wErr:    nil,
+			reasons: []PredicateFailureReason{&PredicateFailureError{tainttoleration.Name, tainttoleration.ErrReasonNotMatch}},
+			name:    "NoExecute taint/toleration not match",
+		},
+		{
+			pod:      &v1.Pod{},
+			nodeInfo: schedulerframework.NewNodeInfo(),
+			node: &v1.Node{
+				ObjectMeta: metav1.ObjectMeta{Name: "machine1"},
+				Spec: v1.NodeSpec{
+					Taints: []v1.Taint{
+						{Key: "baz", Effect: v1.TaintEffectPreferNoSchedule},
+					},
+				},
+				Status: v1.NodeStatus{Capacity: makeResources(10, 20, 32, 0, 0, 0).Capacity, Allocatable: makeAllocatableResources(10, 20, 32, 0, 0, 0)},
+			},
+			fits: true,
+			wErr: nil,
+			name: "PreferNoSchedule taint/toleration not match",
+		},
+		{
+			pod: &v1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Annotations: map[string]string{
+						types.ConfigSourceAnnotationKey: types.FileSource,
+					},
+				},
+			},
+			nodeInfo: schedulerframework.NewNodeInfo(),
+			node: &v1.Node{
+				ObjectMeta: metav1.ObjectMeta{Name: "machine1"},
+				Spec: v1.NodeSpec{
+					Taints: []v1.Taint{
+						{Key: "foo", Effect: v1.TaintEffectNoSchedule},
+						{Key: "bar", Effect: v1.TaintEffectNoExecute},
+					},
+				},
+				Status: v1.NodeStatus{Capacity: makeResources(10, 20, 32, 0, 0, 0).Capacity, Allocatable: makeAllocatableResources(10, 20, 32, 0, 0, 0)},
+			},
+			fits:    true,
+			wErr:    nil,
+			reasons: []PredicateFailureReason{&PredicateFailureError{tainttoleration.Name, tainttoleration.ErrReasonNotMatch}},
+			name:    "static pods ignore taints",
 		},
 	}
 	for _, test := range resourceTests {
