@@ -345,6 +345,8 @@ type podWorkers struct {
 	// Tracks when a static pod is being killed and is removed when the
 	// static pod transitions to the killed state.
 	terminatingStaticPodFullnames map[string]struct{}
+	// Tracks all managed static podsrunning per-static-pod goroutines
+	managedStaticPodFullnames map[string]types.UID
 
 	workQueue queue.WorkQueue
 
@@ -383,6 +385,7 @@ func newPodWorkers(
 		podUpdates:                    map[types.UID]chan podWork{},
 		lastUndeliveredWorkUpdate:     map[types.UID]podWork{},
 		terminatingStaticPodFullnames: map[string]struct{}{},
+		managedStaticPodFullnames:     map[string]types.UID{},
 		syncPodFn:                     syncPodFn,
 		syncTerminatingPodFn:          syncTerminatingPodFn,
 		syncTerminatedPodFn:           syncTerminatedPodFn,
@@ -484,6 +487,36 @@ func (p *podWorkers) UpdatePod(options UpdatePodOptions) {
 
 	p.podLock.Lock()
 	defer p.podLock.Unlock()
+
+	// start the pod worker goroutine if it doesn't exist
+	var podUpdates chan podWork
+	var exists bool
+	if podUpdates, exists = p.podUpdates[uid]; !exists {
+		if kubetypes.IsStaticPod(pod) {
+			fullname := kubecontainer.GetPodFullName(pod)
+			if _, exist := p.managedStaticPodFullnames[fullname]; exist {
+				klog.InfoS("Pod update is ignored, wait for outdated mirror pod to be terminaged", "pod", klog.KObj(pod), "podUID", pod.UID)
+				return
+			}
+			p.managedStaticPodFullnames[fullname] = uid
+		}
+
+		// We need to have a buffer here, because checkForUpdates() method that
+		// puts an update into channel is called from the same goroutine where
+		// the channel is consumed. However, it is guaranteed that in such case
+		// the channel is empty, so buffer of size 1 is enough.
+		podUpdates = make(chan podWork, 1)
+		p.podUpdates[uid] = podUpdates
+
+		// Creating a new pod worker either means this is a new pod, or that the
+		// kubelet just restarted. In either case the kubelet is willing to believe
+		// the status of the pod for the first pod worker sync. See corresponding
+		// comment in syncPod.
+		go func() {
+			defer runtime.HandleCrash()
+			p.managePodLoop(podUpdates)
+		}()
+	}
 
 	// decide what to do with this pod - we are either setting it up, tearing it down, or ignoring it
 	now := time.Now()
@@ -596,27 +629,6 @@ func (p *podWorkers) UpdatePod(options UpdatePodOptions) {
 	work := podWork{
 		WorkType: workType,
 		Options:  options,
-	}
-
-	// start the pod worker goroutine if it doesn't exist
-	var podUpdates chan podWork
-	var exists bool
-	if podUpdates, exists = p.podUpdates[uid]; !exists {
-		// We need to have a buffer here, because checkForUpdates() method that
-		// puts an update into channel is called from the same goroutine where
-		// the channel is consumed. However, it is guaranteed that in such case
-		// the channel is empty, so buffer of size 1 is enough.
-		podUpdates = make(chan podWork, 1)
-		p.podUpdates[uid] = podUpdates
-
-		// Creating a new pod worker either means this is a new pod, or that the
-		// kubelet just restarted. In either case the kubelet is willing to believe
-		// the status of the pod for the first pod worker sync. See corresponding
-		// comment in syncPod.
-		go func() {
-			defer runtime.HandleCrash()
-			p.managePodLoop(podUpdates)
-		}()
 	}
 
 	// dispatch a request to the pod worker if none are running
@@ -862,6 +874,7 @@ func (p *podWorkers) completeTerminatingRuntimePod(pod *v1.Pod) {
 		close(ch)
 	}
 	delete(p.podUpdates, pod.UID)
+	delete(p.managedStaticPodFullnames, kubecontainer.GetPodFullName(pod))
 	delete(p.lastUndeliveredWorkUpdate, pod.UID)
 	delete(p.terminatingStaticPodFullnames, kubecontainer.GetPodFullName(pod))
 }
@@ -879,6 +892,7 @@ func (p *podWorkers) completeTerminated(pod *v1.Pod) {
 		close(ch)
 	}
 	delete(p.podUpdates, pod.UID)
+	delete(p.managedStaticPodFullnames, kubecontainer.GetPodFullName(pod))
 	delete(p.lastUndeliveredWorkUpdate, pod.UID)
 	delete(p.terminatingStaticPodFullnames, kubecontainer.GetPodFullName(pod))
 
@@ -994,6 +1008,12 @@ func (p *podWorkers) removeTerminatedWorker(uid types.UID) {
 	klog.V(4).InfoS("Pod has been terminated and is no longer known to the kubelet, remove all history", "podUID", uid)
 	delete(p.podSyncStatuses, uid)
 	delete(p.podUpdates, uid)
+	for k, v := range p.managedStaticPodFullnames {
+		if v == uid {
+			delete(p.managedStaticPodFullnames, k)
+			break
+		}
+	}
 	delete(p.lastUndeliveredWorkUpdate, uid)
 }
 

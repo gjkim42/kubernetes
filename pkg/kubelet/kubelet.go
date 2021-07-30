@@ -1860,6 +1860,18 @@ func (kl *Kubelet) syncTerminatedPod(ctx context.Context, pod *v1.Pod, podStatus
 	kl.statusManager.TerminatePod(pod)
 	klog.V(4).InfoS("Pod is terminated and will need no more status updates", "pod", klog.KObj(pod), "podUID", pod.UID)
 
+	if kubetypes.IsStaticPod(pod) {
+		mirrorPod, _ := kl.podManager.GetMirrorPodByPod(pod)
+		if kl.podManager.IsMirrorPodOf(mirrorPod, pod) {
+			deleted, err := kl.podManager.DeleteMirrorPod(kubecontainer.GetPodFullName(pod), &mirrorPod.ObjectMeta.UID)
+			if deleted {
+				klog.InfoS("Deleted mirror pod because it is outdated", "pod", klog.KObj(mirrorPod))
+			} else if err != nil {
+				klog.ErrorS(err, "Failed deleting mirror pod", "pod", klog.KObj(mirrorPod))
+			}
+		}
+	}
+
 	return nil
 }
 
