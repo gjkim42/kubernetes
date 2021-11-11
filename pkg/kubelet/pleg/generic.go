@@ -405,21 +405,28 @@ func (g *GenericPLEG) updateCache(pod *kubecontainer.Pod, pid types.UID) error {
 	// GetPodStatus(pod *kubecontainer.Pod) so that Docker can avoid listing
 	// all containers again.
 	status, err := g.runtime.GetPodStatus(pod.ID, pod.Name, pod.Namespace)
+	if err != nil {
+		if klog.V(6).Enabled() {
+			klog.V(6).ErrorS(err, "PLEG: Write status", "pod", klog.KRef(pod.Namespace, pod.Name), "podStatus", status)
+		} else {
+			klog.V(4).ErrorS(err, "PLEG: Write status", "pod", klog.KRef(pod.Namespace, pod.Name))
+		}
+		g.cache.Set(pod.ID, nil, err, timestamp)
+		return err
+	}
 	if klog.V(6).Enabled() {
-		klog.V(6).ErrorS(err, "PLEG: Write status", "pod", klog.KRef(pod.Namespace, pod.Name), "podStatus", status)
+		klog.V(6).InfoS("PLEG: Write status", "pod", klog.KRef(pod.Namespace, pod.Name), "podStatus", status)
 	} else {
-		klog.V(4).ErrorS(err, "PLEG: Write status", "pod", klog.KRef(pod.Namespace, pod.Name))
+		klog.V(4).InfoS("PLEG: Write status", "pod", klog.KRef(pod.Namespace, pod.Name))
 	}
-	if err == nil {
-		// Preserve the pod IP across cache updates if the new IP is empty.
-		// When a pod is torn down, kubelet may race with PLEG and retrieve
-		// a pod status after network teardown, but the kubernetes API expects
-		// the completed pod's IP to be available after the pod is dead.
-		status.IPs = g.getPodIPs(pid, status)
-	}
+	// Preserve the pod IP across cache updates if the new IP is empty.
+	// When a pod is torn down, kubelet may race with PLEG and retrieve
+	// a pod status after network teardown, but the kubernetes API expects
+	// the completed pod's IP to be available after the pod is dead.
+	status.IPs = g.getPodIPs(pid, status)
 
 	g.cache.Set(pod.ID, status, err, timestamp)
-	return err
+	return nil
 }
 
 func updateEvents(eventsByPodID map[types.UID][]*PodLifecycleEvent, e *PodLifecycleEvent) {
