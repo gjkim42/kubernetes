@@ -410,12 +410,18 @@ func CreatePodFailure(t *testing.T, set *apps.StatefulSet, invariants invariantF
 	if err := scaleUpStatefulSetControl(set, ssc, om, invariants); err != nil && isOrHasInternalError(err) {
 		t.Errorf("StatefulSetControl did not return InternalError found %s", err)
 	}
-	// Update so set.Status is set for the next scaleUpStatefulSetControl call.
 	var err error
 	set, err = om.setsLister.StatefulSets(set.Namespace).Get(set.Name)
 	if err != nil {
 		t.Fatalf("Error getting updated StatefulSet: %v", err)
 	}
+	if set.Status.Replicas != 2 {
+		t.Error("Failed to scale StatefulSet to 2 replicas")
+	}
+	if set.Status.UpdatedReplicas != 2 {
+		t.Error("Failed to updatedReplicas correctly")
+	}
+	// Update so set.Status is set for the next scaleUpStatefulSetControl call.
 	if err := scaleUpStatefulSetControl(set, ssc, om, invariants); err != nil {
 		t.Errorf("Failed to turn up StatefulSet : %s", err)
 	}
@@ -557,7 +563,7 @@ func PodRecreateDeleteFailure(t *testing.T, set *apps.StatefulSet, invariants in
 func TestStatefulSetControlScaleDownDeleteError(t *testing.T) {
 	runTestOverPVCRetentionPolicies(
 		t, "", func(t *testing.T, policy *apps.StatefulSetPersistentVolumeClaimRetentionPolicy) {
-			set := newStatefulSet(3)
+			set := newStatefulSet(4)
 			set.Spec.PersistentVolumeClaimRetentionPolicy = policy
 			invariants := assertMonotonicInvariants
 			client := fake.NewSimpleClientset(set)
@@ -571,7 +577,7 @@ func TestStatefulSetControlScaleDownDeleteError(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Error getting updated StatefulSet: %v", err)
 			}
-			*set.Spec.Replicas = 0
+			*set.Spec.Replicas = 1
 			om.SetDeleteStatefulPodError(apierrors.NewInternalError(errors.New("API server failed")), 2)
 			if err := scaleDownStatefulSetControl(set, ssc, om, invariants); err != nil && isOrHasInternalError(err) {
 				t.Errorf("StatefulSetControl failed to throw error on delete %s", err)
@@ -587,14 +593,14 @@ func TestStatefulSetControlScaleDownDeleteError(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Error getting updated StatefulSet: %v", err)
 			}
-			if set.Status.Replicas != 0 {
-				t.Error("Failed to scale statefulset to 0 replicas")
+			if set.Status.Replicas != 1 {
+				t.Error("Failed to scale statefulset to 1 replicas")
 			}
-			if set.Status.ReadyReplicas != 0 {
-				t.Error("Failed to set readyReplicas to 0")
+			if set.Status.ReadyReplicas != 1 {
+				t.Error("Failed to set readyReplicas to 1")
 			}
-			if set.Status.UpdatedReplicas != 0 {
-				t.Error("Failed to set updatedReplicas to 0")
+			if set.Status.UpdatedReplicas != 1 {
+				t.Error("Failed to set updatedReplicas to 1")
 			}
 		})
 }
