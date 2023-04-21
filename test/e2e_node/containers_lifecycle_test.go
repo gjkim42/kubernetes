@@ -38,8 +38,9 @@ import (
 )
 
 type execCommand struct {
-	ExitCode int
-	Delay    int
+	ExitCode   int
+	Delay      int
+	StartDelay int
 }
 
 func ExecCommand(name string, c execCommand) []string {
@@ -55,7 +56,13 @@ func ExecCommand(name string, c execCommand) []string {
 	fmt.Fprintf(&cmd, "touch %s; ", containerLog)
 	fmt.Fprintf(&cmd, "cat %s >> /dev/termination-log; ", containerLog)
 
-	fmt.Fprintf(&cmd, "echo %s '%s Starting' | tee -a %s >> /dev/termination-log; ", timeCmd, name, containerLog)
+	fmt.Fprintf(&cmd, "echo %s '%s Starting %d' | tee -a %s >> /dev/termination-log; ", timeCmd, name, c.StartDelay, containerLog)
+	if c.StartDelay != 0 {
+		fmt.Fprintf(&cmd, "sleep %d; ", c.StartDelay)
+	}
+	// You can check started file to see if the container has started
+	fmt.Fprintf(&cmd, "touch started; ")
+	fmt.Fprintf(&cmd, "echo %s '%s Started' | tee -a %s >> /dev/termination-log; ", timeCmd, name, containerLog)
 	fmt.Fprintf(&cmd, "echo %s '%s Delaying %d' | tee -a %s >> /dev/termination-log; ", timeCmd, name, c.Delay, containerLog)
 	if c.Delay != 0 {
 		fmt.Fprintf(&cmd, "sleep %d; ", c.Delay)
@@ -133,9 +140,21 @@ var _ = SIGDescribe("[NodeConformance] Containers Lifecycle ", func() {
 						Name:  regular1,
 						Image: busyboxImage,
 						Command: ExecCommand(regular1, execCommand{
-							Delay:    1,
-							ExitCode: 0,
+							StartDelay: 5,
+							Delay:      1,
+							ExitCode:   0,
 						}),
+						StartupProbe: &v1.Probe{
+							ProbeHandler: v1.ProbeHandler{
+								Exec: &v1.ExecAction{
+									Command: []string{
+										"test",
+										"-f",
+										"started",
+									},
+								},
+							},
+						},
 					},
 				},
 			},
@@ -145,18 +164,22 @@ var _ = SIGDescribe("[NodeConformance] Containers Lifecycle ", func() {
 
 		/// generates an out file output like:
 		//
-		// 1678337827 45930.43 init-1 Starting
-		// 1678337827 45930.43 init-1 Delaying 1
-		// 1678337828 45931.43 init-1 Exiting
-		// 1678337829 45932.52 init-2 Starting
-		// 1678337829 45932.53 init-2 Delaying 1
-		// 1678337830 45933.53 init-2 Exiting
-		// 1678337831 45934.47 init-3 Starting
-		// 1678337831 45934.47 init-3 Delaying 1
-		// 1678337832 45935.47 init-3 Exiting
-		// 1678337833 45936.58 regular-1 Starting
-		// 1678337833 45936.58 regular-1 Delaying 1
-		// 1678337834 45937.58 regular-1 Exiting
+		// 1682076093 4905.79 init-1 Starting 0
+		// 1682076093 4905.80 init-1 Started
+		// 1682076093 4905.80 init-1 Delaying 1
+		// 1682076094 4906.80 init-1 Exiting
+		// 1682076095 4907.70 init-2 Starting 0
+		// 1682076095 4907.71 init-2 Started
+		// 1682076095 4907.71 init-2 Delaying 1
+		// 1682076096 4908.71 init-2 Exiting
+		// 1682076097 4909.74 init-3 Starting 0
+		// 1682076097 4909.74 init-3 Started
+		// 1682076097 4909.74 init-3 Delaying 1
+		// 1682076098 4910.75 init-3 Exiting
+		// 1682076099 4911.70 regular-1 Starting 5
+		// 1682076104 4916.71 regular-1 Started
+		// 1682076104 4916.71 regular-1 Delaying 1
+		// 1682076105 4917.72 regular-1 Exiting
 
 		client := e2epod.NewPodClient(f)
 		podSpec = client.Create(context.TODO(), podSpec)
@@ -426,8 +449,8 @@ func (o containerOutputList) String() string {
 
 // RunTogether returns an error the lhs and rhs run together
 func (o containerOutputList) RunTogether(lhs, rhs string) error {
-	lhsStart := o.findIndex(lhs, "Starting", 0)
-	rhsStart := o.findIndex(rhs, "Starting", 0)
+	lhsStart := o.findIndex(lhs, "Started", 0)
+	rhsStart := o.findIndex(rhs, "Started", 0)
 
 	lhsFinish := o.findIndex(lhs, "Finishing", 0)
 	rhsFinish := o.findIndex(rhs, "Finishing", 0)
@@ -452,14 +475,14 @@ func (o containerOutputList) RunTogether(lhs, rhs string) error {
 
 // StartsBefore returns an error if lhs did not start before rhs
 func (o containerOutputList) StartsBefore(lhs, rhs string) error {
-	lhsStart := o.findIndex(lhs, "Starting", 0)
+	lhsStart := o.findIndex(lhs, "Started", 0)
 
 	if lhsStart == -1 {
 		return fmt.Errorf("couldn't find that %s ever started, got %v", lhs, o)
 	}
 
 	// this works even for the same names (restart case)
-	rhsStart := o.findIndex(rhs, "Starting", lhsStart+1)
+	rhsStart := o.findIndex(rhs, "Started", lhsStart+1)
 
 	if rhsStart == -1 {
 		return fmt.Errorf("couldn't find that %s started after %s, got %v", rhs, lhs, o)
@@ -486,7 +509,7 @@ func (o containerOutputList) ExitsBefore(lhs, rhs string) error {
 
 // Starts returns an error if the container was not found to have started
 func (o containerOutputList) Starts(name string) error {
-	if idx := o.findIndex(name, "Starting", 0); idx == -1 {
+	if idx := o.findIndex(name, "Started", 0); idx == -1 {
 		return fmt.Errorf("couldn't find that %s ever started, got %v", name, o)
 	}
 	return nil
@@ -494,7 +517,7 @@ func (o containerOutputList) Starts(name string) error {
 
 // DoesntStart returns an error if the container was found to have started
 func (o containerOutputList) DoesntStart(name string) error {
-	if idx := o.findIndex(name, "Starting", 0); idx != -1 {
+	if idx := o.findIndex(name, "Started", 0); idx != -1 {
 		return fmt.Errorf("find %s started, but didn't expect to, got %v", name, o)
 	}
 	return nil
