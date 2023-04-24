@@ -850,8 +850,8 @@ func (m *kubeGenericRuntimeManager) computePodActions(ctx context.Context, pod *
 		}
 		// We should not create a sandbox for a Pod if initialization is done and there is no container to start.
 		if len(containersToStart) == 0 {
-			_, hasInitialized := m.findInitContainersToRun(pod, podStatus)
-			if hasInitialized {
+			hasInitialized := m.computeInitContainerActions(pod, podStatus, &changes)
+			if hasInitialized && len(changes.InitContainersToStart) == 0 {
 				changes.CreateSandbox = false
 				return changes
 			}
@@ -876,30 +876,8 @@ func (m *kubeGenericRuntimeManager) computePodActions(ctx context.Context, pod *
 		}
 	}
 
-	// Check initialization progress and find init containers including sidecar
-	// containers that need to run even after initialization is finished.
-	initContainersToRun, hasInitialized := m.findInitContainersToRun(pod, podStatus)
-	for _, idx := range initContainersToRun {
-		container := &pod.Spec.InitContainers[idx]
-		containerStatus := podStatus.FindContainerStatusByName(container.Name)
-		initFailed := containerStatus != nil && isInitContainerFailed(containerStatus)
-		if initFailed && !shouldRestartOnFailure(pod) && !types.IsSidecarContainer(container) {
-			changes.KillPod = true
-			return changes
-		}
-		// Always try to stop containers in unknown state first.
-		if containerStatus != nil && containerStatus.State == kubecontainer.ContainerStateUnknown {
-			changes.ContainersToKill[containerStatus.ID] = containerToKillInfo{
-				name:      container.Name,
-				container: container,
-				message: fmt.Sprintf("Init container is in %q state, try killing it before restart",
-					containerStatus.State),
-				reason: reasonUnknown,
-			}
-		}
-		changes.InitContainersToStart = append(changes.InitContainersToStart, idx)
-	}
-	if !hasInitialized {
+	hasInitialized := m.computeInitContainerActions(pod, podStatus, &changes)
+	if changes.KillPod || !hasInitialized {
 		// Initialization failed or still in progress. Skip inspecting non-init
 		// containers.
 		return changes
@@ -998,6 +976,7 @@ func (m *kubeGenericRuntimeManager) computePodActions(ctx context.Context, pod *
 
 	if keepCount == 0 && len(changes.ContainersToStart) == 0 {
 		changes.KillPod = true
+		changes.InitContainersToStart = nil
 	}
 
 	return changes
