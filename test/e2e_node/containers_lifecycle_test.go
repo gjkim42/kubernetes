@@ -2202,4 +2202,65 @@ var _ = SIGDescribe("[NodeAlphaFeature:SidecarContainers] Containers Lifecycle "
 		ginkgo.By("Analyzing results")
 		framework.ExpectNoError(results.DoesntStart(regular1))
 	})
+
+	ginkgo.It("should not restart the failed sidecar container if pod RestartPolicy is Never", func() {
+
+		sidecar1 := "sidecar-1"
+		regular1 := "regular-1"
+
+		pod := &v1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "sidecar-container-failed-startup",
+			},
+			Spec: v1.PodSpec{
+				RestartPolicy: v1.RestartPolicyNever,
+				InitContainers: []v1.Container{
+					{
+						Name:  sidecar1,
+						Image: busyboxImage,
+						Command: ExecCommand(sidecar1, execCommand{
+							StartDelay: 30,
+							Delay:      600,
+							ExitCode:   0,
+						}),
+						StartupProbe: &v1.Probe{
+							PeriodSeconds:    1,
+							FailureThreshold: 1,
+							ProbeHandler: v1.ProbeHandler{
+								Exec: &v1.ExecAction{
+									Command: []string{"test", "-f", "started"},
+								},
+							},
+						},
+						RestartPolicy: &containerRestartPolicyAlways,
+					},
+				},
+				Containers: []v1.Container{
+					{
+						Name:  regular1,
+						Image: busyboxImage,
+						Command: ExecCommand(regular1, execCommand{
+							Delay:    1,
+							ExitCode: 0,
+						}),
+					},
+				},
+			},
+		}
+
+		preparePod(pod)
+
+		client := e2epod.NewPodClient(f)
+		pod = client.Create(context.TODO(), pod)
+
+		ginkgo.By("Waiting for the pod to fail")
+		err := e2epod.WaitForPodFailedReason(context.TODO(), f.ClientSet, pod, "", 1*time.Minute)
+		framework.ExpectNoError(err)
+
+		results := parseOutput(pod)
+
+		ginkgo.By("Analyzing results")
+		framework.ExpectNoError(results.DoesntStartAfter(sidecar1, sidecar1))
+		framework.ExpectNoError(results.DoesntStart(regular1))
+	})
 })
