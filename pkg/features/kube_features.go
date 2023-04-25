@@ -766,7 +766,7 @@ const (
 
 	// owner: @gjkim42 @SergeyKanzhelev @matthyx @tzneal
 	// kep: http://kep.k8s.io/753
-	// alpha: v1.27
+	// alpha: v1.28
 	//
 	// Introduces the Sidecar containers, a new type of containers that start
 	// among the Init containers.
