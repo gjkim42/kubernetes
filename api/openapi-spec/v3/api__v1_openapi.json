@@ -1179,6 +1179,10 @@
             "default": {},
             "description": "Compute Resources required by this container. Cannot be updated. More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/"
           },
+          "restartPolicy": {
+            "description": "Restart policy for the container. This may only be set for init containers. The only supported value is \"Always\". When set to \"Always\", this init container will continuously restart if it exits for any reason, until all the regular containers have terminated. This init container will be terminated only after all the regular containers have terminated. This lifecycle differs from normal init containers and is often referred to as a \"sidecar\" container. Although this init container still starts in the init container sequence, it does not wait for the container to complete before proceeding to the next init container. Instead, the next init container starts immediately after this init container has begun, and its startupProbe and postStart hook, if present, have successfully completed.",
+            "type": "string"
+          },
           "securityContext": {
             "allOf": [
               {
@@ -2028,6 +2032,10 @@
             ],
             "default": {},
             "description": "Resources are not allowed for ephemeral containers. Ephemeral containers use spare resources already allocated to the pod."
+          },
+          "restartPolicy": {
+            "description": "Restart policy for the container. This may only be set for init containers. You cannot set this field on ephemeral containers.",
+            "type": "string"
           },
           "securityContext": {
             "allOf": [
