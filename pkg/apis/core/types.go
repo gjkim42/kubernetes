@@ -2279,6 +2279,22 @@ type Container struct {
 	// +featureGate=InPlacePodVerticalScaling
 	// +optional
 	ResizePolicy []ContainerResizePolicy
+	// Restart policy for the container.
+	// This may only be set for init containers.
+	// The only supported value is "Always".
+	// When set to "Always", this init container will continuously restart if it
+	// exits for any reason, until all the regular containers have terminated.
+	// This init container will be terminated only after all the regular
+	// containers have terminated. This lifecycle differs from normal init
+	// containers and is often referred to as a "sidecar" container. Although
+	// this init container still starts in the init container sequence, it does
+	// not wait for the container to complete before proceeding to the next init
+	// container. Instead, the next init container starts immediately after this
+	// init container has begun, and its startupProbe and postStart hook, if
+	// present, have successfully completed.
+	// +featureGate=SidecarContainers
+	// +optional
+	RestartPolicy *ContainerRestartPolicy
 	// +optional
 	VolumeMounts []VolumeMount
 	// volumeDevices is the list of block devices to be used by the container.
@@ -2595,6 +2611,14 @@ const (
 	RestartPolicyAlways    RestartPolicy = "Always"
 	RestartPolicyOnFailure RestartPolicy = "OnFailure"
 	RestartPolicyNever     RestartPolicy = "Never"
+)
+
+// ContainerRestartPolicy is the restart policy for a single container.
+// The only supported value is "Always".
+type ContainerRestartPolicy string
+
+const (
+	ContainerRestartPolicyAlways ContainerRestartPolicy = "Always"
 )
 
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
@@ -3505,6 +3529,12 @@ type EphemeralContainerCommon struct {
 	// +featureGate=InPlacePodVerticalScaling
 	// +optional
 	ResizePolicy []ContainerResizePolicy
+	// Restart policy for the container.
+	// This may only be set for init containers. You cannot set this field on
+	// ephemeral containers.
+	// +featureGate=SidecarContainers
+	// +optional
+	RestartPolicy *ContainerRestartPolicy
 	// Pod volumes to mount into the container's filesystem. Subpath mounts are not allowed for ephemeral containers.
 	// +optional
 	VolumeMounts []VolumeMount
