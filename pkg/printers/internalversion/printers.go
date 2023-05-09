@@ -842,6 +842,11 @@ func printPod(pod *api.Pod, options printers.GenerateOptions) ([]metav1.TableRow
 		row.Conditions = podFailedConditions
 	}
 
+	initContainers := make(map[string]*api.Container)
+	for i := range pod.Spec.InitContainers {
+		initContainers[pod.Spec.InitContainers[i].Name] = &pod.Spec.InitContainers[i]
+	}
+
 	initializing := false
 	for i := range pod.Status.InitContainerStatuses {
 		container := pod.Status.InitContainerStatuses[i]
@@ -854,6 +859,9 @@ func printPod(pod *api.Pod, options printers.GenerateOptions) ([]metav1.TableRow
 		}
 		switch {
 		case container.State.Terminated != nil && container.State.Terminated.ExitCode == 0:
+			continue
+		case isSidecarContainer(initContainers[container.Name]) &&
+			container.Started != nil && *container.Started:
 			continue
 		case container.State.Terminated != nil:
 			// initialization is failed
@@ -876,7 +884,16 @@ func printPod(pod *api.Pod, options printers.GenerateOptions) ([]metav1.TableRow
 		}
 		break
 	}
-	if !initializing {
+
+	hasInitialized := false
+	for _, c := range pod.Status.ContainerStatuses {
+		if c.State.Running != nil || c.State.Terminated != nil {
+			hasInitialized = true
+			break
+		}
+	}
+
+	if !initializing || hasInitialized {
 		restarts = 0
 		hasRunning := false
 		for i := len(pod.Status.ContainerStatuses) - 1; i >= 0; i-- {
@@ -2995,4 +3012,12 @@ func (list SortableResourceNames) Swap(i, j int) {
 
 func (list SortableResourceNames) Less(i, j int) bool {
 	return list[i] < list[j]
+}
+
+func isSidecarContainer(initContainer *api.Container) bool {
+	if initContainer.RestartPolicy == nil {
+		return false
+	}
+
+	return *initContainer.RestartPolicy == api.ContainerRestartPolicyAlways
 }
