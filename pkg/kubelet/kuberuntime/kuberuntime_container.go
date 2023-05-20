@@ -855,7 +855,7 @@ func (m *kubeGenericRuntimeManager) purgeInitContainers(ctx context.Context, pod
 // The actions include:
 // - Start the first init container that has not been started.
 // - Restart all sidecar containers that have started but are not running.
-// - Kill the sidecar containers that have failed the startup proebe.
+// - Kill the sidecar containers that have failed the startup probe.
 func (m *kubeGenericRuntimeManager) computeInitContainerActions(pod *v1.Pod, podStatus *kubecontainer.PodStatus, changes *podActions) bool {
 	if len(pod.Spec.InitContainers) == 0 {
 		return true
