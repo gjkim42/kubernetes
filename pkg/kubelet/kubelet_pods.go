@@ -1385,7 +1385,15 @@ func getPhase(pod *v1.Pod, info []v1.ContainerStatus, podIsTerminal bool) v1.Pod
 	pendingInitialization := 0
 	failedInitialization := 0
 
+	sidecarContainers := make([]v1.Container, 0, len(spec.InitContainers))
 	for _, container := range spec.InitContainers {
+		if kubetypes.IsSidecarContainer(&container) {
+			// Skip the sidecar containers here to handle them separately as they are
+			// slightly different from the init containers in terms of the pod phase.
+			sidecarContainers = append(sidecarContainers, container)
+			continue
+		}
+
 		containerStatus, ok := podutil.GetContainerStatus(info, container.Name)
 		if !ok {
 			pendingInitialization++
@@ -1394,23 +1402,13 @@ func getPhase(pod *v1.Pod, info []v1.ContainerStatus, podIsTerminal bool) v1.Pod
 
 		switch {
 		case containerStatus.State.Running != nil:
-			if kubetypes.IsSidecarContainer(&container) &&
-				containerStatus.Started != nil && *containerStatus.Started {
-				continue
-			}
 			pendingInitialization++
 		case containerStatus.State.Terminated != nil:
 			if containerStatus.State.Terminated.ExitCode != 0 {
-				if kubetypes.IsSidecarContainer(&container) {
-					continue
-				}
 				failedInitialization++
 			}
 		case containerStatus.State.Waiting != nil:
 			if containerStatus.LastTerminationState.Terminated != nil {
-				if kubetypes.IsSidecarContainer(&container) {
-					continue
-				}
 				if containerStatus.LastTerminationState.Terminated.ExitCode != 0 {
 					failedInitialization++
 				}
@@ -1428,55 +1426,74 @@ func getPhase(pod *v1.Pod, info []v1.ContainerStatus, podIsTerminal bool) v1.Pod
 	waiting := 0
 	stopped := 0
 	succeeded := 0
-	terminatedSidecar := 0
-	crashedSidecar := 0
-	hasInitialized := false
 
-	checkContainers := func(containers []v1.Container, isInitContainers bool) {
-		for _, container := range containers {
-			if isInitContainers && !kubetypes.IsSidecarContainer(&container) {
-				continue
-			}
+	for _, container := range sidecarContainers {
+		containerStatus, ok := podutil.GetContainerStatus(info, container.Name)
+		if !ok {
+			unknown++
+			continue
+		}
 
-			containerStatus, ok := podutil.GetContainerStatus(info, container.Name)
-			if !ok {
-				unknown++
-				continue
+		switch {
+		case containerStatus.State.Running != nil:
+			if containerStatus.Started == nil || !*containerStatus.Started {
+				pendingInitialization++
 			}
-
-			if !isInitContainers {
-				if containerStatus.State.Running != nil || containerStatus.State.Terminated != nil {
-					hasInitialized = true
-				}
+			running++
+		case containerStatus.State.Terminated != nil:
+			// Do nothing here as terminated sidecar containers are not taken into
+			// account for the pod phase.
+		case containerStatus.State.Waiting != nil:
+			if containerStatus.LastTerminationState.Terminated != nil {
+				// Do nothing here as terminated sidecar containers are not taken into
+				// account for the pod phase.
+			} else {
+				pendingInitialization++
+				waiting++
 			}
-
-			switch {
-			case containerStatus.State.Running != nil:
-				running++
-			case containerStatus.State.Terminated != nil:
-				stopped++
-				if containerStatus.State.Terminated.ExitCode == 0 {
-					succeeded++
-				} else if isInitContainers && kubetypes.IsSidecarContainer(&container) {
-					terminatedSidecar++
-				}
-			case containerStatus.State.Waiting != nil:
-				if containerStatus.LastTerminationState.Terminated != nil {
-					stopped++
-					if isInitContainers && kubetypes.IsSidecarContainer(&container) {
-						crashedSidecar++
-					}
-				} else {
-					waiting++
-				}
-			default:
-				unknown++
-			}
+		default:
+			pendingInitialization++
+			unknown++
 		}
 	}
 
-	checkContainers(spec.Containers, false)
-	checkContainers(spec.InitContainers, true)
+	// hasInitialized is true if any regular container has started, which
+	// indicates whether the pod has been initialized.
+	// This is needed to differentiate a sidecar container pending in init phase
+	// from one pending in running phase.
+	hasInitialized := false
+	for _, container := range spec.Containers {
+		containerStatus, ok := podutil.GetContainerStatus(info, container.Name)
+		if !ok {
+			unknown++
+			continue
+		}
+
+		if containerStatus.State.Running != nil || containerStatus.State.Terminated != nil {
+			// If any regular container is running or terminated, it means the pod
+			// has been initialized which indicates all init containers have been
+			// completed and all sidecar containers have been started at least once.
+			hasInitialized = true
+		}
+
+		switch {
+		case containerStatus.State.Running != nil:
+			running++
+		case containerStatus.State.Terminated != nil:
+			stopped++
+			if containerStatus.State.Terminated.ExitCode == 0 {
+				succeeded++
+			}
+		case containerStatus.State.Waiting != nil:
+			if containerStatus.LastTerminationState.Terminated != nil {
+				stopped++
+			} else {
+				waiting++
+			}
+		default:
+			unknown++
+		}
+	}
 
 	if failedInitialization > 0 && spec.RestartPolicy == v1.RestartPolicyNever {
 		return v1.PodFailed
@@ -1499,10 +1516,9 @@ func getPhase(pod *v1.Pod, info []v1.ContainerStatus, podIsTerminal bool) v1.Pod
 		if podIsTerminal {
 			// TODO(#116484): Also assign terminal phase to static pods.
 			if !kubetypes.IsStaticPod(pod) {
-				// All containers are terminated in success
-				// We don't have to take the exit status of the sidecar container into
-				// account.
-				if stopped == succeeded+terminatedSidecar+crashedSidecar {
+				// All regular containers are terminated in success and all sidecar
+				// containers are stopped.
+				if stopped == succeeded {
 					return v1.PodSucceeded
 				}
 				// There is at least one failure
@@ -1514,13 +1530,9 @@ func getPhase(pod *v1.Pod, info []v1.ContainerStatus, podIsTerminal bool) v1.Pod
 			// All containers are in the process of restarting
 			return v1.PodRunning
 		}
-		// When regular containers are all complete,
-		// if a sidecar container is still running -> it will be terminated.
-		// else if a sidecar container is waiting to restart -> it will be stopped
-		// in waiting state.
-		if stopped == succeeded+terminatedSidecar+crashedSidecar {
-			// RestartPolicy is not Always, and all
-			// containers are terminated in success
+		if stopped == succeeded {
+			// RestartPolicy is not Always, all containers are terminated in success
+			// and all sidecar containers are stopped.
 			return v1.PodSucceeded
 		}
 		if spec.RestartPolicy == v1.RestartPolicyNever {
