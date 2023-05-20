@@ -1579,7 +1579,7 @@ func TestPrintPodWithSidecar(t *testing.T) {
 					},
 				},
 			},
-			[]metav1.TableRow{{Cells: []interface{}{"test1", "0/1", "Init:0/2", "3 (10s ago)", "<unknown>"}}},
+			[]metav1.TableRow{{Cells: []interface{}{"test1", "0/3", "Init:0/2", "3 (10s ago)", "<unknown>"}}},
 		},
 		{
 			// Test pod has 2 sidecar containers, the first one started and the second one running but not started.
@@ -1617,7 +1617,7 @@ func TestPrintPodWithSidecar(t *testing.T) {
 					},
 				},
 			},
-			[]metav1.TableRow{{Cells: []interface{}{"test1", "0/1", "Init:1/2", "3 (10s ago)", "<unknown>"}}},
+			[]metav1.TableRow{{Cells: []interface{}{"test1", "0/3", "Init:1/2", "3 (10s ago)", "<unknown>"}}},
 		},
 		{
 			// Test pod has 2 sidecar containers started and 1 container running
@@ -1656,7 +1656,7 @@ func TestPrintPodWithSidecar(t *testing.T) {
 					},
 				},
 			},
-			[]metav1.TableRow{{Cells: []interface{}{"test2", "1/1", "Running", "4 (10s ago)", "<unknown>"}}},
+			[]metav1.TableRow{{Cells: []interface{}{"test2", "1/3", "Running", "7 (10s ago)", "<unknown>"}}},
 		},
 		{
 			// Test pod has 2 sidecar containers completed with non-zero and 1 container completed
@@ -1697,7 +1697,7 @@ func TestPrintPodWithSidecar(t *testing.T) {
 			},
 			[]metav1.TableRow{
 				{
-					Cells: []interface{}{"test3", "0/1", "Completed", "4 (10s ago)", "<unknown>"},
+					Cells: []interface{}{"test3", "0/3", "Completed", "7 (10s ago)", "<unknown>"},
 					Conditions: []metav1.TableRowCondition{
 						{Type: metav1.RowCompleted, Status: metav1.ConditionTrue, Reason: "Succeeded", Message: "The pod has completed successfully."},
 					},
