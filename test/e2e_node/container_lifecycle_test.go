@@ -3577,7 +3577,7 @@ var _ = SIGDescribe(nodefeature.SidecarContainers, framework.WithSerial(), "Cont
 	addAfterEachForCleaningUpPods(f)
 	f.NamespacePodSecurityLevel = admissionapi.LevelPrivileged
 
-	ginkgo.It("should restart the containers in right order after the node reboot", func(ctx context.Context) {
+	ginkgo.It("should restart the containers in right order with the proper phase after the node reboot", func(ctx context.Context) {
 		init1 := "init-1"
 		restartableInit2 := "restartable-init-2"
 		init3 := "init-3"
@@ -3673,6 +3673,11 @@ var _ = SIGDescribe(nodefeature.SidecarContainers, framework.WithSerial(), "Cont
 			if pod.Status.ContainerStatuses[0].RestartCount < 1 {
 				return false, nil
 			}
+
+			if pod.Status.Phase != v1.PodPending {
+				return false, fmt.Errorf("pod should remain in the pending phase until it is re-initialized, but it is %q", pod.Status.Phase)
+			}
+
 			if pod.Status.Phase != v1.PodRunning {
 				return false, nil
 			}
